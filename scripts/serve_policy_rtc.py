@@ -10,6 +10,7 @@ import dataclasses
 import logging
 import socket
 
+import torch
 import tyro
 
 from openpi.models_pytorch import rtc_guided as _rtc
@@ -40,11 +41,20 @@ class Args:
     schedule: str = "exp"
     # True: the paper's VJP guidance. False: LeRobot's identity-Jacobian approximation (no backward pass).
     use_vjp: bool = True
+    # torch.compile mode for sample_actions and denoise_step ("none" = eager). openpi's config default is
+    # "max-autotune", which compiles for many minutes on the first request; "default" takes ~1-2 min. Compilation
+    # happens on the client's first (warm-up) requests, as in LeRobot (see openpi_client.rtc_action_queue).
+    compile: str = "default"
 
 
 def main(args: Args) -> None:
+    train_config = _config.get_config(args.policy.config)
+    mode = None if args.compile == "none" else args.compile
+    train_config = dataclasses.replace(
+        train_config, model=dataclasses.replace(train_config.model, pytorch_compile_mode=mode)
+    )
     policy = _policy_config.create_trained_policy(
-        _config.get_config(args.policy.config),
+        train_config,
         args.policy.dir,
         default_prompt=args.default_prompt,
         sample_kwargs={"num_steps": args.num_steps},
@@ -53,7 +63,9 @@ def main(args: Args) -> None:
         max_guidance_weight=args.max_guidance_weight, schedule=args.schedule, use_vjp=args.use_vjp
     )
     policy = _policy_rtc.RTCPolicy.from_policy(policy, rtc_config)
-    logging.info(f"RTC: {rtc_config}, num_steps={args.num_steps}")
+    if mode is not None:  # the guided path calls denoise_step directly: compile it too (incl. its backward)
+        policy._model.denoise_step = torch.compile(policy._model.denoise_step, mode=mode)  # noqa: SLF001
+    logging.info(f"RTC: {rtc_config}, num_steps={args.num_steps}, compile={mode}")
 
     hostname = socket.gethostname()
     logging.info("Creating server (host: %s, ip: %s)", hostname, socket.gethostbyname(hostname))

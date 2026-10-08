@@ -14,6 +14,7 @@ relative (delta) actions are re-anchored to the new state and normalized exactly
 """
 
 from collections.abc import Sequence
+import dataclasses
 import time
 from typing import Any
 
@@ -30,7 +31,8 @@ from openpi.policies import policy as _policy
 PREV_ACTIONS = "rtc_prev_actions"
 INFERENCE_DELAY = "rtc_inference_delay"
 PREFIX_ATTENTION_HORIZON = "rtc_prefix_attention_horizon"
-RTC_KEYS = (PREV_ACTIONS, INFERENCE_DELAY, PREFIX_ATTENTION_HORIZON)
+USE_VJP = "rtc_use_vjp"  # optional per-request override of GuidedRTCConfig.use_vjp (for A/B runs)
+RTC_KEYS = (PREV_ACTIONS, INFERENCE_DELAY, PREFIX_ATTENTION_HORIZON, USE_VJP)
 
 
 class RTCPolicy(_policy.Policy):
@@ -102,7 +104,9 @@ class RTCPolicy(_policy.Policy):
             prev_chunk=prefix[None],
             inference_delay=delay,
             prefix_attention_horizon=horizon,
-            config=self._rtc_config,
+            config=self._rtc_config if USE_VJP not in rtc else dataclasses.replace(
+                self._rtc_config, use_vjp=bool(rtc[USE_VJP])
+            ),
             **sample_kwargs,
         )
         if self._pytorch_device.startswith("cuda"):
@@ -113,5 +117,6 @@ class RTCPolicy(_policy.Policy):
         outputs = jax.tree.map(lambda x: np.asarray(x[0, ...].detach().float().cpu()), outputs)
         outputs = self._output_transform(outputs)
         outputs["policy_timing"] = {"infer_ms": model_time * 1000}
-        outputs["rtc"] = {"inference_delay": delay, "prefix_attention_horizon": horizon, "prev_len": len(prev)}
+        outputs["rtc"] = {"inference_delay": delay, "prefix_attention_horizon": horizon, "prev_len": len(prev),
+                          "use_vjp": bool(rtc.get(USE_VJP, self._rtc_config.use_vjp))}
         return outputs

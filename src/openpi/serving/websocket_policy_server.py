@@ -35,6 +35,7 @@ class WebsocketPolicyServer:
         asyncio.run(self.run())
 
     async def run(self):
+        self._infer_lock = asyncio.Lock()
         async with _server.serve(
             self._handler,
             self._host,
@@ -58,7 +59,10 @@ class WebsocketPolicyServer:
                 obs = msgpack_numpy.unpackb(await websocket.recv())
 
                 infer_time = time.monotonic()
-                action = self._policy.infer(obs)
+                # Run inference in a worker thread so the event loop keeps answering keepalive pings during long
+                # requests (e.g. torch.compile on the first call); the lock keeps one inference at a time.
+                async with self._infer_lock:
+                    action = await asyncio.to_thread(self._policy.infer, obs)
                 infer_time = time.monotonic() - infer_time
 
                 action["server_timing"] = {
