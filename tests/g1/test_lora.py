@@ -224,3 +224,12 @@ def test_merge_equals_unmerged(lora_model, golden):
         print(f"{key}: LoRA effect {effect:.3e}, merge error {error:.3e}")
         assert effect > 1e-2, "LoRA should change the output"
         assert error < 1e-3 * effect
+
+
+def test_trainable_to_float32_keeps_frozen_dtype():
+    """JAX recipe: trainable params fp32, frozen params stay in the training precision (bf16)."""
+    model = torch.nn.Sequential(torch.nn.Linear(4, 4), torch.nn.Linear(4, 4)).to(torch.bfloat16)
+    model[0].requires_grad_(False)
+    assert _lora.trainable_to_float32(model) == 2
+    assert all(p.dtype == torch.bfloat16 for p in model[0].parameters())
+    assert all(p.dtype == torch.float32 for p in model[1].parameters())

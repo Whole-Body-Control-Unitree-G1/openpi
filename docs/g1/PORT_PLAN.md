@@ -23,6 +23,8 @@ Rules for every step:
 5. Keep the license headers of ported code (openpi and LeRobot are Apache-2.0).
 6. **No MobileBench code.** From Chenyu's branch, take **only** `lora.py` (it imports only `torch`). Do not port, import or copy anything from `models_pytorch/mobilebench/` other than that file, or from `scripts/mobilebench/`: no dual-timescale memory, no affordance / goal / workspace decoders, no dual action heads, no episode/TBPTT trainer, no memory-keeping server. Chenyu's `model.py` (where his LoRA is wired in) is **not** ported. We wire LoRA into `PI0Pytorch` ourselves.
 
+**Status (2026-10-07):** Steps 0, 1, 1b done and tested. Training-time RTC (Steps 2–3) is **deferred**; next is Step 4 (guided RTC).
+
 Order: Step 0 → 1 (+1b EMA) → 2 → 3 → 4 → 5 → 6. A **baseline** (no training-time RTC) needs Steps 0, 1, 6, and Step 5 for robot runs.
 
 ---
@@ -110,6 +112,12 @@ The LoRA **math and placement are the same** in both. Chenyu's PyTorch file is a
 - The trainable parameter names match the JAX freeze filter (list in the test).
 - One optimizer step changes only trainable params.
 - `merge_lora` output equals the unmerged output (tolerance 1e-5 in fp32).
+
+### Step 1 finding: bf16 and trainable weights
+
+openpi's PyTorch bf16 mode (`to_bfloat16_for_selected_params`) stores SigLIP in bf16 with no fp32 copy; fine-tuning updates are then often below bf16 resolution and are lost. The JAX trainer keeps trainable params in fp32 and only frozen params in bf16 (`scripts/train.py`: "Convert frozen params to bfloat16"). `lora.trainable_to_float32` does the same; the trainer calls it after `freeze_like_jax`. Verified with a real training run: SigLIP, projector, projections and LoRA change; all frozen tensors are unchanged.
+
+Also: openpi's `FakeDataset` sets all bool fields (image and prompt masks) to False, which hides the whole VLM input; `scripts/g1/smoke_train.py` sets them to True.
 
 ### Step 1b — EMA in the PyTorch trainer
 

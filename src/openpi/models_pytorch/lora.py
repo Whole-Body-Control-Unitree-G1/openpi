@@ -143,6 +143,19 @@ def freeze_like_jax(model: nn.Module, paligemma_variant: str, action_expert_vari
 
 
 @torch.no_grad()
+def trainable_to_float32(model: nn.Module) -> int:
+    """Keep trainable params in fp32 (frozen ones stay as they are), as the JAX trainer does ("Convert frozen params
+    to bfloat16"). In pure bf16, fine-tuning updates (~lr) are often below bf16 resolution and are rounded away.
+    Returns the number of params converted."""
+    converted = 0
+    for p in model.parameters():
+        if p.requires_grad and p.dtype != torch.float32:
+            p.data = p.data.float()
+            converted += 1
+    return converted
+
+
+@torch.no_grad()
 def merge_lora(model: nn.Module) -> None:
     """Fold every LoRA update into its base weight and turn `LoRALinear` back into `nn.Linear` (for export)."""
     for parent in list(model.modules()):
@@ -179,4 +192,5 @@ __all__ = [
     "freeze_like_jax",
     "is_lora_param",
     "merge_lora",
+    "trainable_to_float32",
 ]

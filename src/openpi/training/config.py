@@ -484,6 +484,9 @@ class TrainConfig:
 
     # Precision for PyTorch training.
     pytorch_training_precision: Literal["bfloat16", "float32"] = "bfloat16"
+    # PyTorch only: keep an EMA of the trainable weights with `ema_decay` (as the JAX trainer does). Off by default
+    # because upstream PyTorch training has no EMA; `model.safetensors` then holds the EMA weights.
+    pytorch_ema: bool = False
 
     lr_schedule: _optimizer.LRScheduleConfig = dataclasses.field(default_factory=_optimizer.CosineDecaySchedule)
     optimizer: _optimizer.OptimizerConfig = dataclasses.field(default_factory=_optimizer.AdamW)
