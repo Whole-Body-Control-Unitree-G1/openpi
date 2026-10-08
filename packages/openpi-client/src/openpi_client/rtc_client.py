@@ -41,15 +41,22 @@ class RTCClient:
         self._lock = threading.Lock()
         self._worker: threading.Thread | None = None
         self.errors: list[BaseException] = []
+        self.extra_request: dict = {}  # extra keys sent with every request (e.g. {"rtc_use_vjp": False})
+
+    def reset(self) -> None:
+        """Safety stop / resume: drop the current plan; the next chunk starts from the current pose without RTC."""
+        with self._lock:
+            self.queue.reset()
 
     def _infer(self, obs: dict, request: _queue.Request, start: float, tick_of: Callable[[], int]) -> None:
         try:
             if request.prev_actions is not None:
                 obs = {**obs, PREV_ACTIONS: request.prev_actions, INFERENCE_DELAY: request.inference_delay,
                        PREFIX_ATTENTION_HORIZON: request.prefix_attention_horizon}
-            actions = np.asarray(self.policy.infer(obs)["actions"])
+            response = self.policy.infer({**obs, **self.extra_request})
+            server_ms = response.get("server_timing", {}).get("infer_ms")
             with self._lock:
-                self.queue.receive(actions, request, tick_of(), self._clock() - start)
+                self.queue.receive(np.asarray(response["actions"]), request, tick_of(), self._clock() - start, server_ms)
         except BaseException as e:  # noqa: BLE001
             logging.exception("inference failed")
             self.errors.append(e)

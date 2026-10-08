@@ -49,6 +49,10 @@ class QueueConfig:
     delay_margin: int = 1  # ticks added to the estimated inference delay
     initial_delay: int = 10  # d estimate (ticks) before any latency was measured
     rtc: bool = True  # False: no previous chunk is sent (plain async chunk switching)
+    # As in LeRobot (rollout/inference/rtc.py, compile_warmup_inferences=2): the first requests use real observations
+    # and run back to back; they compile the server (the 2nd carries the 1st chunk as previous chunk, so the RTC path
+    # compiles too), are not executed, and are left out of the delay estimate.
+    warmup_requests: int = 2
 
     def check(self, delay: int) -> list[str]:
         """The RTC timing rules for a given inference delay d (ticks); returns the violated ones."""
@@ -82,6 +86,8 @@ class Stats:
     ticks: int = 0
     starved_ticks: int = 0  # ticks with no fresh target (held the last action)
     lookahead_clipped: int = 0  # ticks where some lookahead frame was past the end of the chunk
+    resets: int = 0  # queue resets (safety stops)
+    warmup: list[dict] = dataclasses.field(default_factory=list)  # one record per warm-up request
     chunks: list[dict] = dataclasses.field(default_factory=list)  # one record per received chunk
 
 
@@ -93,6 +99,12 @@ class ActionQueue:
         self.stats = Stats()
         self._last_sent: np.ndarray | None = None
         self._pending: Request | None = None
+        self._warmups_left = config.warmup_requests
+
+    @property
+    def ready(self) -> bool:
+        """False while warm-up requests are outstanding; nothing is sent to the robot until then."""
+        return self._warmups_left == 0
 
     # --- timing
 
@@ -107,6 +119,8 @@ class ActionQueue:
     def should_request(self, now: int) -> bool:
         if self._pending is not None:
             return False
+        if not self.ready:  # warm-up requests run back to back
+            return True
         return self.current is None or now - self.current.t_obs >= self.config.execute_horizon
 
     def make_request(self, now: int) -> Request:
@@ -114,6 +128,8 @@ class ActionQueue:
         prev = None
         if self.config.rtc and self.current is not None:
             offset = now - self.current.t_obs
+            if not self.ready:  # warm-up: any valid-length previous chunk compiles the RTC path
+                offset = min(offset, self.config.execute_horizon)
             if offset < self.config.horizon:
                 prev = self.current.actions[offset:].copy()
         self._pending = Request(
@@ -124,8 +140,28 @@ class ActionQueue:
         )
         return self._pending
 
-    def receive(self, actions: np.ndarray, request: Request, now: int, latency_s: float) -> None:
+    def reset(self) -> None:
+        """Forget the current chunk and any pending request, e.g. after a safety stop. The next chunk is requested
+        without a previous chunk (no RTC prefix), from the robot's current pose, as at start-up."""
+        self.current = None
+        self._pending = None
+        self._last_sent = None
+        self.stats.resets += 1
+
+    def receive(
+        self, actions: np.ndarray, request: Request, now: int, latency_s: float, server_ms: float | None = None
+    ) -> None:
         """Install a chunk computed for `request`; `now` is the tick at which it arrived."""
+        if request is not self._pending:  # answer to a request made before a reset: drop it
+            return
+        if not self.ready:
+            self._warmups_left -= 1
+            self._pending = None
+            self.stats.warmup.append({"latency_ms": latency_s * 1000, "server_ms": server_ms,
+                                      "rtc_prefix": request.prev_actions is not None})
+            # Keep the chunk only as the next warm-up's previous chunk; after the last warm-up start fresh.
+            self.current = Chunk(np.asarray(actions), request.t_obs) if not self.ready else None
+            return
         self.latency.add(latency_s)
         old = self.current
         self.current = Chunk(np.asarray(actions), request.t_obs)
@@ -137,6 +173,9 @@ class ActionQueue:
             "real_delay": real_delay,
             "frozen_requested": request.inference_delay,
             "latency_ms": latency_s * 1000,
+            "server_ms": server_ms,
+            "network_ms": None if server_ms is None else latency_s * 1000 - server_ms,
+            "rtc_prefix": request.prev_actions is not None,
             "late": real_delay + self.config.lag > request.inference_delay,  # committed more than was frozen
         }
         if old is not None and self._last_sent is not None:
@@ -155,7 +194,7 @@ class ActionQueue:
     def tick(self, now: int) -> tuple[np.ndarray | None, np.ndarray | None]:
         """The target to send at tick `now` (for tick now + l) and its lookahead frames (len(lookahead), D)."""
         self.stats.ticks += 1
-        if self.current is None:
+        if self.current is None or not self.ready:
             return None, None
         target = self._target(self.current, now)
         if target is None:  # ran past the end of the chunk: hold the last action
