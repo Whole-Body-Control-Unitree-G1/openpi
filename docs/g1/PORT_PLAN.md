@@ -23,7 +23,7 @@ Rules for every step:
 5. Keep the license headers of ported code (openpi and LeRobot are Apache-2.0).
 6. **No MobileBench code.** From Chenyu's branch, take **only** `lora.py` (it imports only `torch`). Do not port, import or copy anything from `models_pytorch/mobilebench/` other than that file, or from `scripts/mobilebench/`: no dual-timescale memory, no affordance / goal / workspace decoders, no dual action heads, no episode/TBPTT trainer, no memory-keeping server. Chenyu's `model.py` (where his LoRA is wired in) is **not** ported. We wire LoRA into `PI0Pytorch` ourselves.
 
-**Status (2026-10-07):** Steps 0, 1, 1b, 4 done and tested. Training-time RTC (Steps 2–3) is **deferred**; next is Step 5 (server and client).
+**Status (2026-10-08):** Steps 0, 1, 1b, 4, 5 done and tested. Next: training-time RTC (Steps 2–3), then Step 6 (G1 data config).
 
 Order: Step 0 → 1 (+1b EMA) → 2 → 3 → 4 → 5 → 6. A **baseline** (no training-time RTC) needs Steps 0, 1, 6, and Step 5 for robot runs.
 
@@ -266,6 +266,13 @@ Decision: default = true VJP (the paper's ΠGDM). Option `use_vjp=False` = LeRob
 **Out of scope:** the ScaleBridge `motion_tracking_vla` env (separate repo, separate plan).
 
 ---
+
+**Result (2026-10-08):**
+- 5a `policy_rtc.RTCPolicy` + `scripts/serve_policy_rtc.py`: re-anchors the previous chunk with the training transforms (round trip 1e-5); pi05_aloha on pi05_base, first 8 actions |new − old| 0.261 → 0.016 rad, hand-over jump 0.469 → 0.088 rad.
+- 5b `openpi_client.rtc_action_queue` / `rtc_client`: tick-stamped chunks, target for now + l, frozen prefix d + l, LeRobot-style warm-up (first 2 real requests compile the server, are not executed, not timed), `reset()`; 11 tests.
+- 5c `examples/g1/fake_robot_client.py` + `scripts/g1/run_e2e.sh` (server + 50 Hz fake robot, localhost): s = 20, l = 5. Latency median vanilla 88 ms, RTC no-VJP 109 ms, RTC VJP 219 ms (an earlier run on a busy GPU: 276 / 344 / 595 ms). Largest hand-over jump: no RTC 0.77 rad, no-VJP 0.19, VJP 0.053; no starvation.
+- Upstream changes: `models/model.py` `load_pytorch` builds on the GPU (CPU init took ~6 min); `serving/websocket_policy_server.py` runs inference in a worker thread (a long first request no longer misses the client's keepalive pings).
+- Not done: safety-stop detection (user: restart the process after damping); Saif-style server warm-up with a G1 fake observation (Step 6).
 
 ## Step 6 — G1 data config
 

@@ -21,7 +21,7 @@ def plan_chunk(t_obs, horizon=H, offset=0.0):
 
 @pytest.mark.parametrize("lag", [0, 5])
 def test_sends_target_for_now_plus_lag(lag):
-    queue = q.ActionQueue(q.QueueConfig(lag=lag))
+    queue = q.ActionQueue(q.QueueConfig(warmup_requests=0, lag=lag))
     req = queue.make_request(0)
     queue.receive(plan_chunk(0), req, now=8, latency_s=0.16)
     for now in range(8, 30):
@@ -31,7 +31,7 @@ def test_sends_target_for_now_plus_lag(lag):
 
 
 def test_requests_every_s_ticks_and_one_at_a_time():
-    queue = q.ActionQueue(q.QueueConfig(execute_horizon=20))
+    queue = q.ActionQueue(q.QueueConfig(warmup_requests=0, execute_horizon=20))
     assert queue.should_request(0)
     req = queue.make_request(0)
     assert not queue.should_request(1)  # one request in flight
@@ -40,7 +40,7 @@ def test_requests_every_s_ticks_and_one_at_a_time():
 
 
 def test_prev_actions_aligned_to_new_observation_and_frozen_length():
-    cfg = q.QueueConfig(execute_horizon=20, lag=5, delay_margin=1)
+    cfg = q.QueueConfig(warmup_requests=0, execute_horizon=20, lag=5, delay_margin=1)
     queue = q.ActionQueue(cfg)
     req0 = queue.make_request(0)
     assert req0.prev_actions is None  # first chunk: nothing to continue
@@ -53,13 +53,13 @@ def test_prev_actions_aligned_to_new_observation_and_frozen_length():
 
 
 def test_rtc_off_sends_no_previous_chunk():
-    queue = q.ActionQueue(q.QueueConfig(rtc=False))
+    queue = q.ActionQueue(q.QueueConfig(warmup_requests=0, rtc=False))
     queue.receive(plan_chunk(0), queue.make_request(0), now=8, latency_s=0.1)
     assert queue.make_request(20).prev_actions is None
 
 
 def test_handover_jump_and_late_flag():
-    cfg = q.QueueConfig(execute_horizon=20, lag=0)
+    cfg = q.QueueConfig(warmup_requests=0, execute_horizon=20, lag=0)
     queue = q.ActionQueue(cfg)
     queue.receive(plan_chunk(0), queue.make_request(0), now=5, latency_s=0.1)
     for now in range(5, 21):
@@ -75,7 +75,7 @@ def test_handover_jump_and_late_flag():
 
 
 def test_starvation_when_the_chunk_runs_out():
-    queue = q.ActionQueue(q.QueueConfig(horizon=10, execute_horizon=5))
+    queue = q.ActionQueue(q.QueueConfig(warmup_requests=0, horizon=10, execute_horizon=5))
     queue.receive(plan_chunk(0, horizon=10), queue.make_request(0), now=2, latency_s=0.04)
     for now in range(2, 14):
         target, _ = queue.tick(now)
@@ -84,10 +84,10 @@ def test_starvation_when_the_chunk_runs_out():
 
 
 def test_timing_rules():
-    cfg = q.QueueConfig(horizon=50, execute_horizon=20, lag=5, lookahead=(0, 1, 2, 3, 4))
+    cfg = q.QueueConfig(warmup_requests=0, horizon=50, execute_horizon=20, lag=5, lookahead=(0, 1, 2, 3, 4))
     assert cfg.check(8) == []  # 13 <= 20 <= 37 and 20 + 13 + 4 = 37 <= 50
     assert any("d + l" in p for p in cfg.check(16))  # 21 > s
-    assert any("runs out" in p for p in q.QueueConfig(execute_horizon=30, lag=10).check(10))
+    assert any("runs out" in p for p in q.QueueConfig(warmup_requests=0, execute_horizon=30, lag=10).check(10))
 
 
 class _FakePolicy:
@@ -120,3 +120,40 @@ def test_client_runs_in_real_time_without_starvation():
     # With a consistent plan the sent targets follow it exactly: target(t) = (t + lag) * dt
     for t in range(first, 150):
         assert sent[t] == pytest.approx((t + cfg.lag) * dt, abs=1e-9), t
+
+
+def test_reset_drops_plan_and_late_answers():
+    """Safety stop: the old plan is dropped, an answer to a pre-stop request is ignored, and the next request starts
+    without a previous chunk (from the current pose)."""
+    queue = q.ActionQueue(q.QueueConfig(warmup_requests=0, execute_horizon=20))
+    queue.receive(plan_chunk(0), queue.make_request(0), now=5, latency_s=0.1)
+    stale = queue.make_request(20)
+    queue.reset()
+    assert queue.tick(25) == (None, None)  # nothing to send until a fresh chunk arrives
+    queue.receive(plan_chunk(20), stale, now=28, latency_s=0.16)  # answer to the pre-stop request
+    assert queue.current is None
+    fresh = queue.make_request(30)
+    assert fresh.prev_actions is None
+    queue.receive(plan_chunk(30), fresh, now=38, latency_s=0.16)
+    assert queue.tick(38)[0][0] == 38
+    assert queue.stats.resets == 1
+
+
+def test_warmup_requests_compile_both_paths_and_are_not_executed():
+    """LeRobot-style warm-up: 2 real requests back to back (the 2nd with a previous chunk), not executed, not timed."""
+    queue = q.ActionQueue(q.QueueConfig(warmup_requests=2, execute_horizon=20))
+    assert not queue.ready and queue.should_request(0)
+    w1 = queue.make_request(0)
+    assert w1.prev_actions is None
+    queue.receive(plan_chunk(0), w1, now=4000, latency_s=80.0)  # cold start: compile takes minutes
+    assert queue.tick(4000) == (None, None)  # not executed
+    assert queue.should_request(4001)  # back to back, no waiting for s
+    w2 = queue.make_request(4001)
+    assert w2.prev_actions is not None and len(w2.prev_actions) == H - 20  # exercises the RTC path
+    queue.receive(plan_chunk(4001), w2, now=4100, latency_s=2.0)
+    assert queue.ready and queue.current is None  # warm-up chunk discarded
+    assert len(queue.latency) == 0  # cold-start latencies are not in the delay estimate
+    assert [w["rtc_prefix"] for w in queue.stats.warmup] == [False, True]
+    first = queue.make_request(4101)
+    assert first.prev_actions is None  # first executed chunk starts fresh from the current pose
+    assert first.inference_delay == queue.config.initial_delay + queue.config.lag
