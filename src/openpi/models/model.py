@@ -240,10 +240,13 @@ class BaseModelConfig(abc.ABC):
         state.replace_by_pure_dict(params)
         return nnx.merge(graphdef, state)
 
-    def load_pytorch(self, train_config, weight_path: str):
+    def load_pytorch(self, train_config, weight_path: str, device: str | None = None):
         logger.info(f"train_config: {train_config}")
-        model = pi0_pytorch.PI0Pytorch(config=train_config.model)
-        safetensors.torch.load_model(model, weight_path)
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        with torch.device(device):  # init on the GPU: CPU init of ~3.6B params takes minutes
+            model = pi0_pytorch.PI0Pytorch(config=train_config.model)
+        safetensors.torch.load_model(model, weight_path, device=device)
         return model
 
     @abc.abstractmethod
