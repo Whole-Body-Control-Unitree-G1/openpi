@@ -23,7 +23,7 @@ Rules for every step:
 5. Keep the license headers of ported code (openpi and LeRobot are Apache-2.0).
 6. **No MobileBench code.** From Chenyu's branch, take **only** `lora.py` (it imports only `torch`). Do not port, import or copy anything from `models_pytorch/mobilebench/` other than that file, or from `scripts/mobilebench/`: no dual-timescale memory, no affordance / goal / workspace decoders, no dual action heads, no episode/TBPTT trainer, no memory-keeping server. Chenyu's `model.py` (where his LoRA is wired in) is **not** ported. We wire LoRA into `PI0Pytorch` ourselves.
 
-**Status (2026-10-07):** Steps 0, 1, 1b done and tested. Training-time RTC (Steps 2–3) is **deferred**; next is Step 4 (guided RTC).
+**Status (2026-10-07):** Steps 0, 1, 1b, 4 done and tested. Training-time RTC (Steps 2–3) is **deferred**; next is Step 5 (server and client).
 
 Order: Step 0 → 1 (+1b EMA) → 2 → 3 → 4 → 5 → 6. A **baseline** (no training-time RTC) needs Steps 0, 1, 6, and Step 5 for robot runs.
 
@@ -220,8 +220,10 @@ Decision: default = true VJP (the paper's ΠGDM). Option `use_vjp=False` = LeRob
 
 **Files**
 - create `src/openpi/models_pytorch/rtc_guided.py` — config dataclass (`execution_horizon`, `max_guidance_weight`, `schedule`, `use_vjp`), `get_prefix_weights`, guided Euler loop that wraps `PI0Pytorch.denoise_step` (gradients w.r.t. x_t only, with `torch.enable_grad()`; weights stay frozen)
-- modify `src/openpi/models_pytorch/pi0_pytorch.py` — `sample_actions(..., rtc=None)` dispatches to the guided loop when RTC inputs are given
+- ~~modify `pi0_pytorch.py`~~ not needed: `rtc_guided.sample_actions_guided(model, ...)` builds the prefix cache and wraps `PI0Pytorch.denoise_step`; the Step 5 server calls it directly (upstream file unchanged)
 - create `tests/g1/test_rtc_guided.py`
+
+**Result (2026-10-07):** 37 tests pass. Weights equal kinetix (all schedules) and LeRobot (linear); VJP equals finite differences (1e-6, fp64); no-VJP equals LeRobot's formula; zero weights reproduce the golden sample bit-for-bit; on pi05_base the first 8 actions move to the previous chunk (|diff| 0.223 → 0.027 VJP, 0.004 no-VJP). Latency in strict-fp32 test mode: vanilla 800 ms, no-VJP 809 ms, VJP 1285 ms (serving latency is measured in Step 5).
 
 **Tests**
 - No previous chunk, or schedule ZEROS: equals vanilla `sample_actions` (bit-identical with the same noise).
