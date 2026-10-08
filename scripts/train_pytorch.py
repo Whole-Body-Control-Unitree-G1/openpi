@@ -31,6 +31,7 @@ import platform
 import shutil
 import time
 
+from flax import nnx
 import jax
 import numpy as np
 import safetensors.torch
@@ -41,6 +42,7 @@ import tqdm
 import wandb
 
 import openpi.models.pi0_config
+import openpi.models_pytorch.lora as _lora
 import openpi.models_pytorch.pi0_pytorch
 import openpi.shared.normalize as _normalize
 import openpi.training.config as _config
@@ -406,7 +408,18 @@ def train_loop(config: _config.TrainConfig):
         # Update dtype to match pytorch_training_precision
         object.__setattr__(model_cfg, "dtype", config.pytorch_training_precision)
 
-    model = openpi.models_pytorch.pi0_pytorch.PI0Pytorch(model_cfg).to(device)
+    with torch.device(device):  # init directly on the GPU (CPU init of ~3.6B params takes minutes)
+        model = openpi.models_pytorch.pi0_pytorch.PI0Pytorch(model_cfg)
+
+    # LoRA recipe: freeze like the JAX `freeze_filter` (before DDP, which only tracks params that require grad).
+    if not isinstance(config.freeze_filter, nnx.Nothing):
+        _lora.freeze_like_jax(model, model_cfg.paligemma_variant, model_cfg.action_expert_variant)
+    if is_main:
+        counts = _lora.count_params(model)
+        logging.info(
+            f"Parameters: total {counts['total'] / 1e6:.1f}M, trainable {counts['trainable'] / 1e6:.1f}M, "
+            f"LoRA {counts['lora'] / 1e6:.1f}M"
+        )
 
     if hasattr(model, "gradient_checkpointing_enable"):
         enable_gradient_checkpointing = True
@@ -443,9 +456,13 @@ def train_loop(config: _config.TrainConfig):
         logging.info(f"Loading weights from: {config.pytorch_weight_path}")
 
         model_path = os.path.join(config.pytorch_weight_path, "model.safetensors")
-        safetensors.torch.load_model(
-            (model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model), model_path
+        # A base checkpoint has no LoRA parameters: allow exactly those to be missing.
+        missing, unexpected = safetensors.torch.load_model(
+            (model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model),
+            model_path,
+            strict=False,
         )
+        _lora.check_pretrained_load(missing, unexpected)
         logging.info(f"Loaded PyTorch weights from {config.pytorch_weight_path}")
 
     # Optimizer + learning rate schedule from config
@@ -455,8 +472,9 @@ def train_loop(config: _config.TrainConfig):
     end_lr = config.lr_schedule.decay_lr
 
     # Create optimizer with config parameters
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
     optim = torch.optim.AdamW(
-        model.parameters(),
+        trainable_params,
         lr=peak_lr,
         betas=(config.optimizer.b1, config.optimizer.b2),
         eps=config.optimizer.eps,
@@ -543,7 +561,7 @@ def train_loop(config: _config.TrainConfig):
                 log_memory_usage(device, global_step, "after_backward")
 
             # Gradient clipping
-            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.optimizer.clip_gradient_norm)
+            grad_norm = torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=config.optimizer.clip_gradient_norm)
 
             # Optimizer step
             optim.step()

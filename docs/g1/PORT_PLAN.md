@@ -66,6 +66,10 @@ Recipe (from `models/gemma.py` + `pi0_config.get_freeze_filter`, as ported by Ch
 | `action_in_proj`, `action_out_proj`, `time_mlp_in/out` | fully trained |
 | LoRA init | A and B both N(0, 0.01) (openpi JAX convention, not zero-B) |
 
+### Finding during implementation (2026-10-07): Chenyu's PyTorch LoRA is not the JAX LoRA
+
+openpi's JAX LoRA (`models/lora.py` `Einsum`) adds the update on the last two axes of each einsum weight, so it is **per head**: q `(N, D, H)` → A `(N, D, r)`, B `(N, r, H)`; k/v per kv head; out `(N, H, D)` → A `(N, H, r)`, B `(N, r, D)`, summed over heads. FFN LoRA is one pair per matrix and **not scaled**. Chenyu's `lora.py` uses one shared A/B for q and for o (fewer parameters, no per-head blocks). We implement the JAX layout (`src/openpi/models_pytorch/lora.py`); `tests/g1/test_lora.py` checks that the LoRA and trainable parameter counts equal the JAX model's under `get_freeze_filter()`.
+
 ### LoRA: Saif vs Chenyu (what we take from each)
 
 The LoRA **math and placement are the same** in both. Chenyu's PyTorch file is a deliberate copy of the openpi JAX LoRA that Saif uses through config names. The differences are framework and training settings:
