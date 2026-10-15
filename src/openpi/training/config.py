@@ -822,6 +822,8 @@ _CONFIGS = [
         batch_size=32,
         num_train_steps=30_000,
         num_workers=8,
+        # A checkpoint is about 12 GB; the PyTorch trainer keeps every one it saves (it ignores keep_period).
+        save_interval=5000,
     ),
     #
     # Fine-tuning Aloha configs.
