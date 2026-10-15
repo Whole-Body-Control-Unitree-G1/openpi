@@ -50,6 +50,33 @@ import openpi.training.config as _config
 import openpi.training.data_loader as _data
 
 
+def _resize_action_projections(ckpt: dict[str, torch.Tensor], model_sd: dict[str, torch.Tensor]) -> None:
+    """Fit a base checkpoint's action projections (action_dim 32) to a model with a larger action_dim, in place.
+
+    The checkpoint's weights fill the first dims; the new input columns are zero (so the model starts out as the base
+    model) and the new output rows keep the model's fresh init. Any other shape mismatch is an error.
+    """
+    for key in ckpt:
+        if key not in model_sd:
+            continue  # load_state_dict reports it as "unexpected"
+        old, new = ckpt[key], model_sd[key]
+        if old.shape == new.shape:
+            continue
+        if key == "action_in_proj.weight":  # [width, action_dim]
+            fixed = torch.zeros_like(new)
+            fixed[:, : old.shape[1]] = old
+        elif key == "action_out_proj.weight":  # [action_dim, width]
+            fixed = new.clone()
+            fixed[: old.shape[0]] = old
+        elif key == "action_out_proj.bias":  # [action_dim]
+            fixed = torch.zeros_like(new)
+            fixed[: old.shape[0]] = old
+        else:
+            raise ValueError(f"Checkpoint shape mismatch for {key}: {tuple(old.shape)} vs model {tuple(new.shape)}")
+        ckpt[key] = fixed
+        logging.info(f"Resized {key}: {tuple(old.shape)} -> {tuple(new.shape)}")
+
+
 def init_logging():
     level_mapping = {"DEBUG": "D", "INFO": "I", "WARNING": "W", "ERROR": "E", "CRITICAL": "C"}
 
@@ -470,14 +497,29 @@ def train_loop(config: _config.TrainConfig):
         logging.info(f"Loading weights from: {config.pytorch_weight_path}")
 
         model_path = os.path.join(config.pytorch_weight_path, "model.safetensors")
+        target = model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model
+        # As safetensors.torch.load_model, plus resizing the action projections when action_dim differs from the
+        # checkpoint's (e.g. 40 vs pi05_base's 32).
+        ckpt = safetensors.torch.load_file(model_path)
+        model_sd = target.state_dict()
+        _resize_action_projections(ckpt, model_sd)
+        # Tied weights are stored once in the file; their other names are not missing (as in load_model).
+        to_removes = safetensors.torch._remove_duplicate_names(model_sd, preferred_names=ckpt.keys())
+        missing, unexpected = target.load_state_dict(ckpt, strict=False)
+        missing = set(missing)
+        for to_remove_group in to_removes.values():
+            for to_remove in to_remove_group:
+                if to_remove not in missing:
+                    unexpected.append(to_remove)
+                else:
+                    missing.remove(to_remove)
         # A base checkpoint has no LoRA parameters: allow exactly those to be missing.
-        missing, unexpected = safetensors.torch.load_model(
-            (model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model),
-            model_path,
-            strict=False,
+        _lora.check_pretrained_load(sorted(missing), unexpected)
+        logging.info(
+            f"Loaded PyTorch weights from {config.pytorch_weight_path}; "
+            f"action_in_proj {tuple(target.action_in_proj.weight.shape)}, "
+            f"action_out_proj {tuple(target.action_out_proj.weight.shape)}"
         )
-        _lora.check_pretrained_load(missing, unexpected)
-        logging.info(f"Loaded PyTorch weights from {config.pytorch_weight_path}")
 
     # Optimizer + learning rate schedule from config
     warmup_steps = config.lr_schedule.warmup_steps
