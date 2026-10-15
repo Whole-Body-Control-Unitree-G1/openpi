@@ -810,7 +810,7 @@ _CONFIGS = [
         # 40 = ScaleBFM WholeBody-14 frame (pelvis 7 + 29 joints) + 2 grippers + 2 head; 50 steps = 1 s at 50 Hz.
         model=pi0_config.Pi0Config(pi05=True, action_dim=40, action_horizon=50,paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
         data=LeRobotG1DataConfig(
-            repo_id="g1_dex1_head/pick3",
+            repo_id="kjswaroopNU/g1_pick3",
             base_config=DataConfig(prompt_from_task=True),
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
