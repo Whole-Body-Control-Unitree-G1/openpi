@@ -19,6 +19,7 @@ import openpi.models.pi0_fast as pi0_fast
 import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
+import openpi.policies.g1_policy as g1_policy
 import openpi.policies.libero_policy as libero_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
@@ -352,6 +353,43 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
             repack_transforms=repack_transform,
             data_transforms=data_transforms,
             model_transforms=model_transforms,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotG1DataConfig(DataConfigFactory):
+    """g1_dex1_head LocoDexGrasp data (MagicSim, `convert_raw_to_lerobot_g1_dex1_head.py`); see `g1_policy.py`."""
+
+    # Joints and head as deltas to the current state (grippers absolute).
+    delta_joints: bool = True
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "observation/head": "observation.images.head",
+                        "observation/left_wrist": "observation.images.left_wrist",
+                        "observation/right_wrist": "observation.images.right_wrist",
+                        "observation/state": "observation.state",
+                        "observation/pelvis_pose": "observation.pelvis_pose",
+                        "actions": "action",
+                        "prompt": "prompt",
+                    }
+                )
+            ]
+        )
+        data_transforms = _transforms.Group(
+            inputs=[g1_policy.G1Inputs(model_type=model_config.model_type, delta_joints=self.delta_joints)],
+            outputs=[g1_policy.G1Outputs(delta_joints=self.delta_joints)],
+        )
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=ModelTransformFactory()(model_config),
+            action_sequence_keys=("action",),
         )
 
 
@@ -763,6 +801,27 @@ _CONFIGS = [
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         pytorch_weight_path="/path/to/your/pytorch_weight_path",
         num_train_steps=30_000,
+    ),
+    #
+    # g1_dex1_head (Unitree G1 + Dex1-1 + 2-DoF head) LocoDexGrasp, MagicSim data.
+    #
+    TrainConfig(
+        name="pi05_g1_pick3",
+        # 40 = ScaleBFM WholeBody-14 frame (pelvis 7 + 29 joints) + 2 grippers + 2 head; 50 steps = 1 s at 50 Hz.
+        model=pi0_config.Pi0Config(pi05=True, action_dim=40, action_horizon=50,paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
+        data=LeRobotG1DataConfig(
+            repo_id="g1_dex1_head/pick3",
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        freeze_filter=pi0_config.Pi0Config(
+                    pi05=True, paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora").get_freeze_filter(),
+        # Turn off EMA for LoRA finetuning (as pi0_libero_low_mem_finetune).
+        ema_decay=None,
+        # TrainConfig defaults, written out: 30k x 32 = 960k samples, about 9 passes over the 103k frames.
+        batch_size=32,
+        num_train_steps=30_000,
+        num_workers=8,
     ),
     #
     # Fine-tuning Aloha configs.
