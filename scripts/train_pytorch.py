@@ -49,6 +49,9 @@ import openpi.training.ema_pytorch as _ema
 import openpi.training.config as _config
 import openpi.training.data_loader as _data
 
+# Checkpoints kept on disk: the newest ones, older ones are deleted after each save (one is about 12 GB).
+KEEP_LAST_CHECKPOINTS = 3
+
 
 def _resize_action_projections(ckpt: dict[str, torch.Tensor], model_sd: dict[str, torch.Tensor]) -> None:
     """Fit a base checkpoint's action projections (action_dim 32) to a model with a larger action_dim, in place.
@@ -224,6 +227,11 @@ def save_checkpoint(model, optimizer, global_step, config, is_main, data_config,
         tmp_ckpt_dir.rename(final_ckpt_dir)
 
         logging.info(f"Saved checkpoint at step {global_step} -> {final_ckpt_dir}")
+
+        saved = sorted(int(d.name) for d in config.checkpoint_dir.iterdir() if d.is_dir() and d.name.isdigit())
+        for step in saved[:-KEEP_LAST_CHECKPOINTS]:
+            shutil.rmtree(config.checkpoint_dir / str(step))
+            logging.info(f"Removed old checkpoint {step}")
 
         # Log checkpoint to wandb
         if config.wandb_enabled:
