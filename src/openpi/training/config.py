@@ -562,6 +562,9 @@ class TrainConfig:
     # PyTorch only: keep an EMA of the trainable weights with `ema_decay` (as the JAX trainer does). Off by default
     # because upstream PyTorch training has no EMA; `model.safetensors` then holds the EMA weights.
     pytorch_ema: bool = False
+    # PyTorch only: recompute activations in the backward pass. Saves GPU memory at about 25-30% more compute per step;
+    # turn off when the batch fits without it (pi0.5 LoRA, batch 32: about 32 GB with it on an H100).
+    pytorch_gradient_checkpointing: bool = True
 
     lr_schedule: _optimizer.LRScheduleConfig = dataclasses.field(default_factory=_optimizer.CosineDecaySchedule)
     optimizer: _optimizer.OptimizerConfig = dataclasses.field(default_factory=_optimizer.AdamW)
@@ -876,9 +879,12 @@ _CONFIGS = [
                     pi05=True, paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora").get_freeze_filter(),
         ema_decay=None,
         batch_size=32,
-        num_train_steps=30_000,
+        num_train_steps=50_000,
+        lr_schedule=_optimizer.CosineDecaySchedule(decay_steps=50_000),
         num_workers=8,
         save_interval=5000,
+        # pi05_g1_pick3 (run1) was GPU-bound at 2.6 s/step with 32 of 80 GB used: skip the activation recompute.
+        pytorch_gradient_checkpointing=False,
     ),
     #
     # Fine-tuning Aloha configs.

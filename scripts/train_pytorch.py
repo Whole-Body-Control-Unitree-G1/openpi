@@ -470,7 +470,10 @@ def train_loop(config: _config.TrainConfig):
             f"LoRA {counts['lora'] / 1e6:.1f}M"
         )
 
-    if hasattr(model, "gradient_checkpointing_enable"):
+    if not config.pytorch_gradient_checkpointing:
+        enable_gradient_checkpointing = False
+        logging.info("Gradient checkpointing disabled (pytorch_gradient_checkpointing=False)")
+    elif hasattr(model, "gradient_checkpointing_enable"):
         enable_gradient_checkpointing = True
         model.gradient_checkpointing_enable()
         logging.info("Enabled gradient checkpointing for memory optimization")
