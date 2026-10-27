@@ -886,6 +886,92 @@ _CONFIGS = [
         # pi05_g1_pick3 (run1) was GPU-bound at 2.6 s/step with 32 of 80 GB used: skip the activation recompute.
         pytorch_gradient_checkpointing=False,
     ),
+    TrainConfig(
+        name="pi05_g1_pick3_abs",
+        # As pi05_g1_pick3_vel, but the waist / arm joint and head targets are absolute instead of deltas to the
+        # current state: in closed loop (sim, 35k) the delta targets accumulated chunk by chunk and drove the wrists
+        # 25-50 deg outside the trained range. Needs its own norm stats (the action stats differ).
+        model=pi0_config.Pi0Config(pi05=True, action_dim=40, action_horizon=50, paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
+        data=LeRobotG1HomieDataConfig(
+            repo_id="kjswaroopNU/g1_pick3_homie",
+            base_config=DataConfig(prompt_from_task=True),
+            delta_joints=False,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        freeze_filter=pi0_config.Pi0Config(
+                    pi05=True, paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora").get_freeze_filter(),
+        ema_decay=None,
+        batch_size=32,
+        num_train_steps=30_000,
+        lr_schedule=_optimizer.CosineDecaySchedule(decay_steps=30_000),
+        num_workers=8,
+        save_interval=5000,
+        pytorch_gradient_checkpointing=False,
+    ),
+    TrainConfig(
+        name="pi05_g1_cube_abs",
+        # Sim, cube only, right hand only, cube always to the right (504 episodes, MagicSim cube_right overlay),
+        # converted at 30 fps (--fps 30, the real camera rate). Absolute targets as pi05_g1_pick3_abs; a 30-step
+        # chunk = 1 s, as the 50-step chunk was at 50 fps.
+        model=pi0_config.Pi0Config(pi05=True, action_dim=40, action_horizon=30, paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
+        data=LeRobotG1HomieDataConfig(
+            repo_id="kjswaroopNU/g1_cube_right_homie",
+            base_config=DataConfig(prompt_from_task=True),
+            delta_joints=False,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        freeze_filter=pi0_config.Pi0Config(
+                    pi05=True, paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora").get_freeze_filter(),
+        ema_decay=None,
+        batch_size=32,
+        num_train_steps=30_000,
+        lr_schedule=_optimizer.CosineDecaySchedule(decay_steps=30_000),
+        num_workers=8,
+        save_interval=5000,
+        pytorch_gradient_checkpointing=False,
+    ),
+    TrainConfig(
+        name="pi05_g1_cube_v2_abs",
+        # As pi05_g1_cube_abs on the cube v2 collection (490 episodes, 2026-10-26): wide random spawn, HOMIE dead zone
+        # (no sub-0.1 m/s commands), tucked arms while walking, lift + 1.5 s hold. 50k steps (the v1 run: 30k).
+        model=pi0_config.Pi0Config(pi05=True, action_dim=40, action_horizon=30, paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
+        data=LeRobotG1HomieDataConfig(
+            repo_id="kjswaroopNU/g1_cube_v2_homie",
+            base_config=DataConfig(prompt_from_task=True),
+            delta_joints=False,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        freeze_filter=pi0_config.Pi0Config(
+                    pi05=True, paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora").get_freeze_filter(),
+        ema_decay=None,
+        batch_size=32,
+        num_train_steps=50_000,
+        lr_schedule=_optimizer.CosineDecaySchedule(decay_steps=50_000),
+        num_workers=8,
+        save_interval=5000,
+        pytorch_gradient_checkpointing=False,
+    ),
+    TrainConfig(
+        name="pi05_g1_cube_real_abs",
+        # Real robot, the same task and layout: PICO teleop in decoupled_wbc (record_teleop_homie.py, 30 fps) ->
+        # MagicSim convert_real_to_lerobot.py. ~50 episodes, so fewer steps than the sim config.
+        model=pi0_config.Pi0Config(pi05=True, action_dim=40, action_horizon=30, paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
+        data=LeRobotG1HomieDataConfig(
+            repo_id="kjswaroopNU/g1_cube_right_real",
+            base_config=DataConfig(prompt_from_task=True),
+            delta_joints=False,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        freeze_filter=pi0_config.Pi0Config(
+                    pi05=True, paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora").get_freeze_filter(),
+        ema_decay=None,
+        batch_size=32,
+        num_train_steps=15_000,
+        lr_schedule=_optimizer.CosineDecaySchedule(decay_steps=15_000),
+        num_workers=8,
+        save_interval=2500,
+        pytorch_gradient_checkpointing=False,
+    ),
     #
     # Fine-tuning Aloha configs.
     #
